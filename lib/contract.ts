@@ -72,7 +72,7 @@ function mapRecord(raw: any): ClassificationRecord {
 async function waitForFinalized(hash: `0x${string}`, address: string) {
   const client = getWriteClient(address);
   return client.waitForTransactionReceipt({
-    hash,
+    hash: hash as any,
     status: TransactionStatus.FINALIZED,
     retries: 80,
     interval: 4000,
