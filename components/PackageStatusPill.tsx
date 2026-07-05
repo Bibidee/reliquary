@@ -9,7 +9,7 @@ const statusConfig: Record<PackageStatus, { label: string; color: string; dot: s
 };
 
 export default function PackageStatusPill({ status }: { status: string }) {
-  const cfg = statusConfig[status] ?? { label: status, color: "#898176", dot: "#898176" };
+  const cfg = statusConfig[status as PackageStatus] ?? { label: status, color: "#898176", dot: "#898176" };
   return (
     <span
       className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] uppercase tracking-[0.15em]"
