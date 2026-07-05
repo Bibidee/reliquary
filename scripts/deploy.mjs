@@ -43,10 +43,23 @@ async function deploy() {
     interval: 5000,
   });
 
-  const contractAddress = receipt.contract_address || receipt.contractAddress;
+  const contractAddress =
+    receipt.contract_address ||
+    receipt.contractAddress ||
+    receipt?.data?.contract_address ||
+    receipt?.to_address;
   if (!contractAddress) {
     console.error("Deployment failed — no contract address in receipt.");
     console.error("Receipt:", JSON.stringify(receipt, null, 2));
+    process.exit(1);
+  }
+
+  // Check if execution actually succeeded
+  const leaderReceipt = receipt?.consensus_data?.leader_receipt?.[0];
+  if (leaderReceipt?.execution_result === "ERROR") {
+    const stderr = leaderReceipt?.genvm_result?.stderr || "(no stderr)";
+    console.error("Contract execution failed during deployment:");
+    console.error(stderr);
     process.exit(1);
   }
 
