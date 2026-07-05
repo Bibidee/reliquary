@@ -60,6 +60,13 @@ const stampConfig: Record<
     border: "#8F2E2E",
     rotate: "2deg",
   },
+  verified_significant: {
+    label: "Verified Significant",
+    color: "#4F6F64",
+    bg: "rgba(79,111,100,0.1)",
+    border: "#4F6F64",
+    rotate: "-1.5deg",
+  },
 };
 
 interface Props {
