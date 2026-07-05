@@ -16,7 +16,7 @@ export default function ArchiveTimeline({ pkg }: { pkg: EvidencePackage }) {
   if (pkg.status !== "pending") {
     events.push({ date: pkg.submittedAt.split("T")[0], label: "Classification Received", color: "#4F6F64" });
   }
-  if (pkg.status === "challenged" || pkg.status === "disputed") {
+  if (pkg.status === "challenged" || pkg.challengeCount > 0) {
     events.push({ date: "—", label: "Challenge Submitted", color: "#8F2E2E" });
   }
 
