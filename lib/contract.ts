@@ -173,6 +173,10 @@ export async function createPackage(
   address: string,
   onStatus?: (status: string) => void
 ): Promise<number> {
+  // Read count BEFORE creating — the new package will occupy this index
+  onStatus?.("Reading current state…");
+  const expectedId = await getPackageCount();
+
   const client = getWriteClient(address);
   onStatus?.("Broadcasting to studionet…");
   const hash = await client.writeContract({
@@ -199,9 +203,13 @@ export async function createPackage(
     value: 0n,
   });
   onStatus?.("Awaiting finalization…");
-  const receipt = await waitForFinalized(hash, address);
-  const pkgId = (receipt as any).result;
-  return Number(pkgId ?? 0);
+  await waitForFinalized(hash, address);
+
+  // Confirm the package exists on-chain before returning its id
+  onStatus?.("Confirming package on-chain…");
+  await getPackage(expectedId); // throws if not found
+
+  return expectedId;
 }
 
 export async function requestClassification(
