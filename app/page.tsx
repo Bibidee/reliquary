@@ -31,7 +31,7 @@ export default async function LandingPage() {
     <div style={{ background: "#0B0B0A" }}>
 
       {/* Hero */}
-      <section className="relative min-h-[90vh] flex flex-col items-center justify-center px-6 text-center overflow-hidden">
+      <section className="relative min-h-[90vh] flex flex-col items-center justify-center px-6 pb-20 text-center">
         <div
           className="absolute inset-0 pointer-events-none"
           style={{
@@ -98,10 +98,6 @@ export default async function LandingPage() {
           </Link>
         </div>
 
-        <div className="absolute bottom-8 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1">
-          <div className="w-px h-8" style={{ background: "rgba(200,138,45,0.3)" }} />
-          <span className="text-[10px] uppercase tracking-[0.2em]" style={{ fontFamily: "var(--font-inter)", color: "#898176" }}>Scroll</span>
-        </div>
       </section>
 
       {/* What Reliquary preserves */}

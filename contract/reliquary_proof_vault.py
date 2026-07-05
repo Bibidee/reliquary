@@ -25,9 +25,7 @@ ALLOWED_CHALLENGE_TYPES = (
 
 
 class ReliquaryProofVault(gl.Contract):
-    # Packages stored as JSON strings keyed by u256 id
     packages: TreeMap[u256, str]
-    # Flat arrays of JSON-encoded challenge/record strings
     challenges: DynArray[str]
     records: DynArray[str]
     package_count: u256
@@ -51,6 +49,42 @@ class ReliquaryProofVault(gl.Contract):
 
     def _set_pkg(self, key: u256, pkg: dict) -> None:
         self.packages[key] = json.dumps(pkg)
+
+    def _classify(self, prompt: str) -> dict:
+        """Run LLM classification using the current GenLayer nondet API."""
+        def leader_fn():
+            response = gl.nondet.exec_prompt(prompt)
+            return json.loads(response)
+
+        def validator_fn(leader_result) -> bool:
+            if not isinstance(leader_result, gl.vm.Return):
+                return False
+            data = leader_result.calldata
+            if not isinstance(data, dict):
+                return False
+            return (
+                data.get("classification") in ALLOWED_CLASSIFICATIONS
+                and data.get("confidence") in ALLOWED_CONFIDENCE
+                and data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
+                and data.get("significance") in ALLOWED_SIGNIFICANCE
+                and data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
+                and data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
+                and isinstance(data.get("short_reason"), str)
+            )
+
+        return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+
+    def _fetch_url(self, url: str) -> str:
+        """Fetch a URL using the current GenLayer nondet web API."""
+        try:
+            def leader_fn():
+                web_data = gl.nondet.web.get(url)
+                return web_data.body
+            def validator_fn(leader_result) -> bool:
+                return isinstance(leader_result, gl.vm.Return)
+            return gl.vm.run_nondet_unsafe(leader_fn, validator_fn) or ""
+        except Exception:
+            return ""
 
     # ── write methods ─────────────────────────────────────────────────────────
 
@@ -142,20 +176,18 @@ class ReliquaryProofVault(gl.Contract):
 
         fetched_content = ""
         for url in pkg.get("primary_sources", [])[:2]:
-            try:
-                if url.startswith("http"):
-                    page = gl.get_webpage(url, mode="text")
-                    fetched_content += f"\n--- Content from {url} ---\n{str(page)[:2000]}\n"
-            except Exception:
-                fetched_content += f"\n--- URL could not be fetched: {url} ---\n"
+            if url.startswith("http"):
+                content = self._fetch_url(url)
+                if content:
+                    fetched_content += f"\n--- Content from {url} ---\n{content[:2000]}\n"
+                else:
+                    fetched_content += f"\n--- Could not fetch: {url} ---\n"
 
         for url in pkg.get("archive_links", [])[:1]:
-            try:
-                if url.startswith("http"):
-                    page = gl.get_webpage(url, mode="text")
-                    fetched_content += f"\n--- Archive content from {url} ---\n{str(page)[:1500]}\n"
-            except Exception:
-                fetched_content += f"\n--- Archive URL could not be fetched: {url} ---\n"
+            if url.startswith("http"):
+                content = self._fetch_url(url)
+                if content:
+                    fetched_content += f"\n--- Archive from {url} ---\n{content[:1500]}\n"
 
         sources_block = "\n".join(sources_summary) if sources_summary else "No sources provided."
 
@@ -181,23 +213,21 @@ FETCHED CONTENT:
 {fetched_content if fetched_content else "No source content could be fetched."}
 
 RULES:
-- Do not overstate confidence. Do not classify as authentic unless evidence clearly supports the claim.
+- Do not overstate confidence.
+- Do not classify as authentic unless evidence clearly supports the claim.
 - If evidence cannot be accessed, classify as unverifiable or incomplete.
 - Use high significance when the record matters even if uncertain.
 
-Return ONLY valid JSON, no markdown:
-{{"classification": "authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed", "confidence": "low|medium|high", "manipulation_risk": "low|medium|high|unknown", "significance": "none|low|medium|high|historic", "source_alignment": "strong|partial|weak|contradictory|unverifiable", "preservation_priority": "standard|elevated|urgent|restricted_review", "short_reason": "One concise sentence."}}"""
+Return a JSON object with exactly these keys:
+classification: one of authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed
+confidence: one of low|medium|high
+manipulation_risk: one of low|medium|high|unknown
+significance: one of none|low|medium|high|historic
+source_alignment: one of strong|partial|weak|contradictory|unverifiable
+preservation_priority: one of standard|elevated|urgent|restricted_review
+short_reason: one concise sentence explaining the classification"""
 
-        result_str = gl.exec_prompt(prompt)
-        result = json.loads(result_str.strip())
-
-        assert result.get("classification") in ALLOWED_CLASSIFICATIONS, "Invalid classification"
-        assert result.get("confidence") in ALLOWED_CONFIDENCE, "Invalid confidence"
-        assert result.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK, "Invalid manipulation_risk"
-        assert result.get("significance") in ALLOWED_SIGNIFICANCE, "Invalid significance"
-        assert result.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT, "Invalid source_alignment"
-        assert result.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY, "Invalid preservation_priority"
-        assert isinstance(result.get("short_reason"), str), "Invalid short_reason"
+        result = self._classify(prompt)
 
         pkg["current_classification"] = result["classification"]
         pkg["confidence"] = result["confidence"]
@@ -284,12 +314,10 @@ Return ONLY valid JSON, no markdown:
 
         counter_content = ""
         for url in challenge.get("counter_evidence", [])[:2]:
-            try:
-                if url.startswith("http"):
-                    page = gl.get_webpage(url, mode="text")
-                    counter_content += f"\n--- Counter evidence from {url} ---\n{str(page)[:1500]}\n"
-            except Exception:
-                counter_content += f"\n--- Counter URL could not be fetched: {url} ---\n"
+            if url.startswith("http"):
+                content = self._fetch_url(url)
+                if content:
+                    counter_content += f"\n--- Counter evidence from {url} ---\n{content[:1500]}\n"
 
         prompt = f"""You are a Reliquary reclassification validator. A challenge has been filed. Review both the original evidence and the challenge.
 
@@ -310,18 +338,16 @@ FETCHED COUNTER EVIDENCE:
 
 RULES: If the challenge raises credible new information, update accordingly. If weak, keep similar but note dispute. Maintain epistemic honesty.
 
-Return ONLY valid JSON, no markdown:
-{{"classification": "authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed", "confidence": "low|medium|high", "manipulation_risk": "low|medium|high|unknown", "significance": "none|low|medium|high|historic", "source_alignment": "strong|partial|weak|contradictory|unverifiable", "preservation_priority": "standard|elevated|urgent|restricted_review", "short_reason": "One concise sentence."}}"""
+Return a JSON object with exactly these keys:
+classification: one of authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed
+confidence: one of low|medium|high
+manipulation_risk: one of low|medium|high|unknown
+significance: one of none|low|medium|high|historic
+source_alignment: one of strong|partial|weak|contradictory|unverifiable
+preservation_priority: one of standard|elevated|urgent|restricted_review
+short_reason: one concise sentence explaining the reclassification"""
 
-        result_str = gl.exec_prompt(prompt)
-        result = json.loads(result_str.strip())
-
-        assert result.get("classification") in ALLOWED_CLASSIFICATIONS
-        assert result.get("confidence") in ALLOWED_CONFIDENCE
-        assert result.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
-        assert result.get("significance") in ALLOWED_SIGNIFICANCE
-        assert result.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
-        assert result.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
+        result = self._classify(prompt)
 
         pkg["current_classification"] = result["classification"]
         pkg["confidence"] = result["confidence"]
@@ -334,7 +360,6 @@ Return ONLY valid JSON, no markdown:
         pkg["classification_count"] = pkg["classification_count"] + 1
         self._set_pkg(key, pkg)
 
-        # Mark challenge as reviewed
         for i in range(int(self.challenge_count)):
             c = json.loads(self.challenges[i])
             if c["id"] == challenge_id and c["package_id"] == package_id:
