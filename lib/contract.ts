@@ -200,7 +200,7 @@ export async function createPackage(
   });
   onStatus?.("Awaiting finalization…");
   const receipt = await waitForFinalized(hash, address);
-  const pkgId = receipt.result ?? receipt.returnValue;
+  const pkgId = (receipt as any).result;
   return Number(pkgId ?? 0);
 }
 
@@ -249,7 +249,7 @@ export async function submitChallenge(
   });
   onStatus?.("Awaiting finalization…");
   const receipt = await waitForFinalized(hash, address);
-  const challengeId = receipt.result ?? receipt.returnValue;
+  const challengeId = (receipt as any).result;
   return Number(challengeId ?? 0);
 }
 
