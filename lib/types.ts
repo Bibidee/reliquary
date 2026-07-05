@@ -4,6 +4,7 @@ export type Classification =
   | "manipulated"
   | "incomplete"
   | "historically_significant"
+  | "verified_significant"
   | "context_required"
   | "unverifiable"
   | "disputed";

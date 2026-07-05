@@ -23,6 +23,7 @@ const classificationOptions: { value: Classification | ""; label: string }[] = [
   { value: "manipulated", label: "Manipulated" },
   { value: "incomplete", label: "Incomplete" },
   { value: "historically_significant", label: "Historically Significant" },
+  { value: "verified_significant", label: "Verified Significant" },
   { value: "context_required", label: "Context Required" },
   { value: "unverifiable", label: "Unverifiable" },
   { value: "disputed", label: "Disputed" },
