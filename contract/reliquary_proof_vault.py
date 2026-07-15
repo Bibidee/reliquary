@@ -96,18 +96,14 @@ class ReliquaryProofVault(gl.Contract):
             ):
                 return False
 
-            # ── Structured comparison (free-form short_reason excluded) ─────────
-            # Consensus requires exact agreement on all five judgment fields.
-            # short_reason is prose and may differ between validators even when
-            # the substantive judgment is identical, so it is intentionally excluded.
-            return (
-                validator_data.get("classification") == leader_data.get("classification")
-                and validator_data.get("confidence") == leader_data.get("confidence")
-                and validator_data.get("manipulation_risk") == leader_data.get("manipulation_risk")
-                and validator_data.get("significance") == leader_data.get("significance")
-                and validator_data.get("source_alignment") == leader_data.get("source_alignment")
-                and validator_data.get("preservation_priority") == leader_data.get("preservation_priority")
-            )
+            # ── Structured comparison ────────────────────────────────────────────
+            # Consensus requires agreement on the primary classification label.
+            # Secondary fields (confidence, risk scores, etc.) are validated for
+            # schema correctness but excluded from the consensus gate — independent
+            # LLM calls may legitimately assign different confidence levels to the
+            # same substantive verdict, and requiring exact agreement on all fields
+            # would cause valid consensus to fail due to LLM non-determinism.
+            return validator_data.get("classification") == leader_data.get("classification")
 
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
