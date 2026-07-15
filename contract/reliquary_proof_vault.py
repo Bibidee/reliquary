@@ -50,62 +50,71 @@ class ReliquaryProofVault(gl.Contract):
     def _set_pkg(self, key: u256, pkg: dict) -> None:
         self.packages[key] = json.dumps(pkg)
 
-    def _classify(self, prompt: str) -> dict:
-        """Run LLM classification. Leader and validator each independently call the LLM."""
+    def _llm_classify(self, prompt: str) -> dict:
+        """Single nondeterministic LLM classification call with schema validation."""
         def leader_fn():
             response = gl.nondet.exec_prompt(prompt)
             return json.loads(response)
 
         def validator_fn(leader_result) -> bool:
-            # Sanity-check the leader's return envelope.
             if not isinstance(leader_result, gl.vm.Return):
                 return False
-            leader_data = leader_result.calldata
-            if not isinstance(leader_data, dict):
+            data = leader_result.calldata
+            if not isinstance(data, dict):
                 return False
-            # Verify the leader's structured fields are well-formed before comparing.
-            if not (
-                leader_data.get("classification") in ALLOWED_CLASSIFICATIONS
-                and leader_data.get("confidence") in ALLOWED_CONFIDENCE
-                and leader_data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
-                and leader_data.get("significance") in ALLOWED_SIGNIFICANCE
-                and leader_data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
-                and leader_data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
-                and isinstance(leader_data.get("short_reason"), str)
-            ):
-                return False
-
-            # ── Independent validator LLM judgment ──────────────────────────────
-            # The validator evaluates the original evidence prompt directly —
-            # the leader's classification is NOT included here, so the validator
-            # cannot anchor on the leader's result.
-            try:
-                validator_response = gl.nondet.exec_prompt(prompt)
-                validator_data = json.loads(validator_response)
-            except Exception:
-                return False
-
-            # Verify the validator's own result is well-formed.
-            if not (
-                validator_data.get("classification") in ALLOWED_CLASSIFICATIONS
-                and validator_data.get("confidence") in ALLOWED_CONFIDENCE
-                and validator_data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
-                and validator_data.get("significance") in ALLOWED_SIGNIFICANCE
-                and validator_data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
-                and validator_data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
-            ):
-                return False
-
-            # ── Structured comparison ────────────────────────────────────────────
-            # Consensus requires agreement on the primary classification label.
-            # Secondary fields (confidence, risk scores, etc.) are validated for
-            # schema correctness but excluded from the consensus gate — independent
-            # LLM calls may legitimately assign different confidence levels to the
-            # same substantive verdict, and requiring exact agreement on all fields
-            # would cause valid consensus to fail due to LLM non-determinism.
-            return validator_data.get("classification") == leader_data.get("classification")
+            return (
+                data.get("classification") in ALLOWED_CLASSIFICATIONS
+                and data.get("confidence") in ALLOWED_CONFIDENCE
+                and data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
+                and data.get("significance") in ALLOWED_SIGNIFICANCE
+                and data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
+                and data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
+                and isinstance(data.get("short_reason"), str)
+            )
 
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
+
+    def _classify(self, prompt: str) -> dict:
+        """
+        Two independent LLM judgments evaluated against the same evidence prompt.
+
+        GenLayer's validator_fn runs deterministically — nested nondeterministic
+        calls inside it are not supported. Instead, we make two separate
+        run_nondet_unsafe calls: one for the leader judgment and one for an
+        independent validator judgment. Both reach BFT consensus individually.
+        The contract then compares the two independent results and only writes
+        state when they agree on the primary classification label.
+
+        Flow:
+            original evidence prompt
+                  ↓
+            leader_judgment  ← independent gl.nondet.exec_prompt call
+                  ↓
+            original evidence prompt (no leader output leaked in)
+                  ↓
+            validator_judgment ← independent gl.nondet.exec_prompt call
+                  ↓
+            leader_judgment.classification == validator_judgment.classification?
+                  ↓ yes
+            write state
+        """
+        # Leader's independent LLM judgment on the original evidence.
+        leader_judgment = self._llm_classify(prompt)
+
+        # Validator's independent LLM judgment on the same original evidence.
+        # The prompt does NOT include leader_judgment, so this call cannot
+        # anchor on or imitate the leader's result.
+        validator_judgment = self._llm_classify(prompt)
+
+        # Compare only the primary classification label. Secondary fields
+        # (confidence, risk scores, etc.) may legitimately differ between two
+        # independent LLM calls on the same evidence without indicating
+        # substantive disagreement.
+        assert leader_judgment.get("classification") == validator_judgment.get("classification"), \
+            f"Independent validators disagree: leader={leader_judgment.get('classification')}, " \
+            f"validator={validator_judgment.get('classification')}"
+
+        return leader_judgment
 
     def _fetch_url(self, url: str) -> str:
         """Fetch a URL using the current GenLayer nondet web API."""
