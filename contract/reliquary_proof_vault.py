@@ -50,11 +50,39 @@ class ReliquaryProofVault(gl.Contract):
     def _set_pkg(self, key: u256, pkg: dict) -> None:
         self.packages[key] = json.dumps(pkg)
 
+    def _extract_json(self, text: str) -> dict:
+        """Extract the first JSON object from text, tolerating prose around it."""
+        text = text.strip()
+        start = text.find("{")
+        if start == -1:
+            raise ValueError("No JSON object found in response")
+        depth = 0
+        for i in range(start, len(text)):
+            if text[i] == "{":
+                depth += 1
+            elif text[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    return json.loads(text[start:i + 1])
+        raise ValueError("Unterminated JSON object in response")
+
     def _llm_classify(self, prompt: str) -> dict:
         """Single nondeterministic LLM classification call with schema validation."""
         def leader_fn():
             response = gl.nondet.exec_prompt(prompt)
-            return json.loads(response)
+            text = response.strip()
+            start = text.find("{")
+            if start == -1:
+                raise ValueError("No JSON in response")
+            depth = 0
+            for i in range(start, len(text)):
+                if text[i] == "{":
+                    depth += 1
+                elif text[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return json.loads(text[start:i + 1])
+            raise ValueError("Unterminated JSON")
 
         def validator_fn(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
@@ -260,14 +288,8 @@ RULES:
 - If evidence cannot be accessed, classify as unverifiable or incomplete.
 - Use high significance when the record matters even if uncertain.
 
-Return a JSON object with exactly these keys:
-classification: one of authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed
-confidence: one of low|medium|high
-manipulation_risk: one of low|medium|high|unknown
-significance: one of none|low|medium|high|historic
-source_alignment: one of strong|partial|weak|contradictory|unverifiable
-preservation_priority: one of standard|elevated|urgent|restricted_review
-short_reason: one concise sentence explaining the classification"""
+Respond with ONLY a JSON object — no prose, no markdown, no code fences. Use exactly these keys:
+{"classification":"<authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed>","confidence":"<low|medium|high>","manipulation_risk":"<low|medium|high|unknown>","significance":"<none|low|medium|high|historic>","source_alignment":"<strong|partial|weak|contradictory|unverifiable>","preservation_priority":"<standard|elevated|urgent|restricted_review>","short_reason":"<one concise sentence>"}"""
 
         result = self._classify(prompt)
 
@@ -380,14 +402,8 @@ FETCHED COUNTER EVIDENCE:
 
 RULES: If the challenge raises credible new information, update accordingly. If weak, keep similar but note dispute. Maintain epistemic honesty.
 
-Return a JSON object with exactly these keys:
-classification: one of authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed
-confidence: one of low|medium|high
-manipulation_risk: one of low|medium|high|unknown
-significance: one of none|low|medium|high|historic
-source_alignment: one of strong|partial|weak|contradictory|unverifiable
-preservation_priority: one of standard|elevated|urgent|restricted_review
-short_reason: one concise sentence explaining the reclassification"""
+Respond with ONLY a JSON object — no prose, no markdown, no code fences. Use exactly these keys:
+{"classification":"<authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed>","confidence":"<low|medium|high>","manipulation_risk":"<low|medium|high|unknown>","significance":"<none|low|medium|high|historic>","source_alignment":"<strong|partial|weak|contradictory|unverifiable>","preservation_priority":"<standard|elevated|urgent|restricted_review>","short_reason":"<one concise sentence>"}"""
 
         result = self._classify(prompt)
 
