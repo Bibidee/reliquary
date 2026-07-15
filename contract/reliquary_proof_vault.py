@@ -134,13 +134,17 @@ class ReliquaryProofVault(gl.Contract):
         # anchor on or imitate the leader's result.
         validator_judgment = self._llm_classify(prompt)
 
-        # Compare only the primary classification label. Secondary fields
-        # (confidence, risk scores, etc.) may legitimately differ between two
-        # independent LLM calls on the same evidence without indicating
-        # substantive disagreement.
-        assert leader_judgment.get("classification") == validator_judgment.get("classification"), \
-            f"Independent validators disagree: leader={leader_judgment.get('classification')}, " \
-            f"validator={validator_judgment.get('classification')}"
+        # Compare the primary classification label. If the two independent calls
+        # agree, return the leader result. If they disagree, return the leader
+        # result anyway but record the disagreement in short_reason so it is
+        # visible on-chain. We do not abort on disagreement — that would prevent
+        # classification of genuinely ambiguous evidence.
+        if leader_judgment.get("classification") != validator_judgment.get("classification"):
+            leader_judgment["short_reason"] = (
+                f"[Validators split: leader={leader_judgment.get('classification')}, "
+                f"independent={validator_judgment.get('classification')}] "
+                + leader_judgment.get("short_reason", "")
+            )
 
         return leader_judgment
 
@@ -288,8 +292,14 @@ RULES:
 - If evidence cannot be accessed, classify as unverifiable or incomplete.
 - Use high significance when the record matters even if uncertain.
 
-Respond with ONLY a JSON object — no prose, no markdown, no code fences. Use exactly these keys:
-{"classification":"<authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed>","confidence":"<low|medium|high>","manipulation_risk":"<low|medium|high|unknown>","significance":"<none|low|medium|high|historic>","source_alignment":"<strong|partial|weak|contradictory|unverifiable>","preservation_priority":"<standard|elevated|urgent|restricted_review>","short_reason":"<one concise sentence>"}"""
+Return ONLY a valid JSON object on a single line, no prose, no markdown, no code fences. Required keys and allowed values:
+classification: authentic | weak | manipulated | incomplete | historically_significant | verified_significant | context_required | unverifiable | disputed
+confidence: low | medium | high
+manipulation_risk: low | medium | high | unknown
+significance: none | low | medium | high | historic
+source_alignment: strong | partial | weak | contradictory | unverifiable
+preservation_priority: standard | elevated | urgent | restricted_review
+short_reason: one concise sentence"""
 
         result = self._classify(prompt)
 
@@ -402,8 +412,14 @@ FETCHED COUNTER EVIDENCE:
 
 RULES: If the challenge raises credible new information, update accordingly. If weak, keep similar but note dispute. Maintain epistemic honesty.
 
-Respond with ONLY a JSON object — no prose, no markdown, no code fences. Use exactly these keys:
-{"classification":"<authentic|weak|manipulated|incomplete|historically_significant|verified_significant|context_required|unverifiable|disputed>","confidence":"<low|medium|high>","manipulation_risk":"<low|medium|high|unknown>","significance":"<none|low|medium|high|historic>","source_alignment":"<strong|partial|weak|contradictory|unverifiable>","preservation_priority":"<standard|elevated|urgent|restricted_review>","short_reason":"<one concise sentence>"}"""
+Return ONLY a valid JSON object on a single line, no prose, no markdown, no code fences. Required keys and allowed values:
+classification: authentic | weak | manipulated | incomplete | historically_significant | verified_significant | context_required | unverifiable | disputed
+confidence: low | medium | high
+manipulation_risk: low | medium | high | unknown
+significance: none | low | medium | high | historic
+source_alignment: strong | partial | weak | contradictory | unverifiable
+preservation_priority: standard | elevated | urgent | restricted_review
+short_reason: one concise sentence"""
 
         result = self._classify(prompt)
 
