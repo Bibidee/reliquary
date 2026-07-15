@@ -51,25 +51,62 @@ class ReliquaryProofVault(gl.Contract):
         self.packages[key] = json.dumps(pkg)
 
     def _classify(self, prompt: str) -> dict:
-        """Run LLM classification using the current GenLayer nondet API."""
+        """Run LLM classification. Leader and validator each independently call the LLM."""
         def leader_fn():
             response = gl.nondet.exec_prompt(prompt)
             return json.loads(response)
 
         def validator_fn(leader_result) -> bool:
+            # Sanity-check the leader's return envelope.
             if not isinstance(leader_result, gl.vm.Return):
                 return False
-            data = leader_result.calldata
-            if not isinstance(data, dict):
+            leader_data = leader_result.calldata
+            if not isinstance(leader_data, dict):
                 return False
+            # Verify the leader's structured fields are well-formed before comparing.
+            if not (
+                leader_data.get("classification") in ALLOWED_CLASSIFICATIONS
+                and leader_data.get("confidence") in ALLOWED_CONFIDENCE
+                and leader_data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
+                and leader_data.get("significance") in ALLOWED_SIGNIFICANCE
+                and leader_data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
+                and leader_data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
+                and isinstance(leader_data.get("short_reason"), str)
+            ):
+                return False
+
+            # ── Independent validator LLM judgment ──────────────────────────────
+            # The validator evaluates the original evidence prompt directly —
+            # the leader's classification is NOT included here, so the validator
+            # cannot anchor on the leader's result.
+            try:
+                validator_response = gl.nondet.exec_prompt(prompt)
+                validator_data = json.loads(validator_response)
+            except Exception:
+                return False
+
+            # Verify the validator's own result is well-formed.
+            if not (
+                validator_data.get("classification") in ALLOWED_CLASSIFICATIONS
+                and validator_data.get("confidence") in ALLOWED_CONFIDENCE
+                and validator_data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
+                and validator_data.get("significance") in ALLOWED_SIGNIFICANCE
+                and validator_data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
+                and validator_data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
+            ):
+                return False
+
+            # ── Structured comparison (free-form short_reason excluded) ─────────
+            # Consensus requires exact agreement on all five judgment fields.
+            # short_reason is prose and may differ between validators even when
+            # the substantive judgment is identical, so it is intentionally excluded.
             return (
-                data.get("classification") in ALLOWED_CLASSIFICATIONS
-                and data.get("confidence") in ALLOWED_CONFIDENCE
-                and data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
-                and data.get("significance") in ALLOWED_SIGNIFICANCE
-                and data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
-                and data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
-                and isinstance(data.get("short_reason"), str)
+                validator_data.get("classification") == leader_data.get("classification")
+                and validator_data.get("confidence") == leader_data.get("confidence")
+                and validator_data.get("manipulation_risk") == leader_data.get("manipulation_risk")
+                and validator_data.get("significance") == leader_data.get("significance")
+                and validator_data.get("source_alignment") == leader_data.get("source_alignment")
+                and validator_data.get("preservation_priority") == leader_data.get("preservation_priority")
             )
 
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
