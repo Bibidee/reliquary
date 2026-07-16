@@ -45,3 +45,9 @@ deployment.json
 .claude/
 
 .vercel
+
+# python / genlayer test tooling
+__pycache__/
+*.pyc
+.pytest_cache/
+artifacts/

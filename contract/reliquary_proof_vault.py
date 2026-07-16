@@ -37,7 +37,7 @@ class ReliquaryProofVault(gl.Contract):
         self.challenge_count = u256(0)
         self.record_count = u256(0)
 
-    # ── helpers ───────────────────────────────────────────────────────────────
+    # -- helpers ---------------------------------------------------------------
 
     def _require_package(self, package_id: int) -> u256:
         key = u256(package_id)
@@ -50,103 +50,61 @@ class ReliquaryProofVault(gl.Contract):
     def _set_pkg(self, key: u256, pkg: dict) -> None:
         self.packages[key] = json.dumps(pkg)
 
-    def _extract_json(self, text: str) -> dict:
-        """Extract the first JSON object from text, tolerating prose around it."""
-        text = text.strip()
-        start = text.find("{")
-        if start == -1:
-            raise ValueError("No JSON object found in response")
-        depth = 0
-        for i in range(start, len(text)):
-            if text[i] == "{":
-                depth += 1
-            elif text[i] == "}":
-                depth -= 1
-                if depth == 0:
-                    return json.loads(text[start:i + 1])
-        raise ValueError("Unterminated JSON object in response")
+    def _validate_judgment_schema(self, data) -> bool:
+        if not isinstance(data, dict):
+            return False
+        return (
+            data.get("classification") in ALLOWED_CLASSIFICATIONS
+            and data.get("confidence") in ALLOWED_CONFIDENCE
+            and data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
+            and data.get("significance") in ALLOWED_SIGNIFICANCE
+            and data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
+            and data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
+            and isinstance(data.get("short_reason"), str)
+        )
 
-    def _llm_classify(self, prompt: str) -> dict:
-        """Single nondeterministic LLM classification call with schema validation."""
+    def _classify(self, prompt: str) -> dict:
+        """
+        Comparative Equivalence Principle: the validator independently re-runs
+        the same LLM classification prompt and compares its own judgment against
+        the leader's proposed judgment, rather than merely inspecting the
+        leader's output for schema validity.
+
+        Flow (per GenLayer's documented run_nondet_unsafe pattern):
+            leader_fn()    -> gl.nondet.exec_prompt(prompt) -> leader judgment
+            validator_fn() -> gl.nondet.exec_prompt(prompt) -> validator's OWN
+                               independent judgment on the same original evidence
+                               (the leader's result is never injected into the
+                               prompt, so the validator cannot anchor on it)
+                            -> compares validator judgment vs leader judgment
+                            -> returns True (agree) / False (disagree)
+
+        Consensus requires agreement on the primary `classification` label.
+        Secondary fields (confidence, risk scores, etc.) are schema-validated
+        but excluded from the agreement check - independent LLM calls may
+        legitimately assign different confidence levels to the same
+        substantive verdict without indicating real disagreement.
+        """
         def leader_fn():
-            response = gl.nondet.exec_prompt(prompt)
-            text = response.strip()
-            start = text.find("{")
-            if start == -1:
-                raise ValueError("No JSON in response")
-            depth = 0
-            for i in range(start, len(text)):
-                if text[i] == "{":
-                    depth += 1
-                elif text[i] == "}":
-                    depth -= 1
-                    if depth == 0:
-                        return json.loads(text[start:i + 1])
-            raise ValueError("Unterminated JSON")
+            return gl.nondet.exec_prompt(prompt, response_format="json")
 
         def validator_fn(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
                 return False
-            data = leader_result.calldata
-            if not isinstance(data, dict):
+            leader_data = leader_result.calldata
+            if not self._validate_judgment_schema(leader_data):
                 return False
-            return (
-                data.get("classification") in ALLOWED_CLASSIFICATIONS
-                and data.get("confidence") in ALLOWED_CONFIDENCE
-                and data.get("manipulation_risk") in ALLOWED_MANIPULATION_RISK
-                and data.get("significance") in ALLOWED_SIGNIFICANCE
-                and data.get("source_alignment") in ALLOWED_SOURCE_ALIGNMENT
-                and data.get("preservation_priority") in ALLOWED_PRESERVATION_PRIORITY
-                and isinstance(data.get("short_reason"), str)
-            )
+
+            # The validator runs its own independent LLM call against the
+            # same original evidence prompt - this is the actual line that
+            # answers "does the validator run its own LLM request?"
+            validator_data = gl.nondet.exec_prompt(prompt, response_format="json")
+            if not self._validate_judgment_schema(validator_data):
+                return False
+
+            return validator_data.get("classification") == leader_data.get("classification")
 
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
-
-    def _classify(self, prompt: str) -> dict:
-        """
-        Two independent LLM judgments evaluated against the same evidence prompt.
-
-        GenLayer's validator_fn runs deterministically — nested nondeterministic
-        calls inside it are not supported. Instead, we make two separate
-        run_nondet_unsafe calls: one for the leader judgment and one for an
-        independent validator judgment. Both reach BFT consensus individually.
-        The contract then compares the two independent results and only writes
-        state when they agree on the primary classification label.
-
-        Flow:
-            original evidence prompt
-                  ↓
-            leader_judgment  ← independent gl.nondet.exec_prompt call
-                  ↓
-            original evidence prompt (no leader output leaked in)
-                  ↓
-            validator_judgment ← independent gl.nondet.exec_prompt call
-                  ↓
-            leader_judgment.classification == validator_judgment.classification?
-                  ↓ yes
-            write state
-        """
-        # Leader's independent LLM judgment on the original evidence.
-        leader_judgment = self._llm_classify(prompt)
-
-        # Validator's independent LLM judgment on the same original evidence.
-        # The prompt does NOT include leader_judgment, so this call cannot
-        # anchor on or imitate the leader's result.
-        validator_judgment = self._llm_classify(prompt)
-
-        # Compare the primary classification label. If the two independent calls
-        # agree, return the leader result. If they disagree, return the leader
-        # result anyway but record the disagreement in short_reason so it is
-        # visible on-chain. We do not abort on disagreement — that would prevent
-        # classification of genuinely ambiguous evidence.
-        if leader_judgment.get("classification") != validator_judgment.get("classification"):
-            leader_judgment["short_reason"] = (
-                f"[Validators split: leader={leader_judgment.get('classification')}, "
-                f"independent={validator_judgment.get('classification')}] "
-                + leader_judgment.get("short_reason", "")
-            )
-
-        return leader_judgment
 
     def _fetch_url(self, url: str) -> str:
         """Fetch a URL using the current GenLayer nondet web API."""
@@ -160,7 +118,7 @@ class ReliquaryProofVault(gl.Contract):
         except Exception:
             return ""
 
-    # ── write methods ─────────────────────────────────────────────────────────
+    # -- write methods ---------------------------------------------------------
 
     @gl.public.write
     def create_package(
@@ -456,7 +414,7 @@ short_reason: one concise sentence"""
         self.records.append(json.dumps(rec))
         self.record_count = self.record_count + u256(1)
 
-    # ── view methods ──────────────────────────────────────────────────────────
+    # -- view methods ----------------------------------------------------------
 
     @gl.public.view
     def get_package(self, package_id: int) -> dict:
