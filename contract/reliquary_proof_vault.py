@@ -111,7 +111,9 @@ class ReliquaryProofVault(gl.Contract):
         try:
             def leader_fn():
                 web_data = gl.nondet.web.get(url)
-                return web_data.body
+                if web_data.body is None:
+                    return ""
+                return web_data.body.decode("utf-8", errors="replace")
             def validator_fn(leader_result) -> bool:
                 return isinstance(leader_result, gl.vm.Return)
             return gl.vm.run_nondet_unsafe(leader_fn, validator_fn) or ""
