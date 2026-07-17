@@ -1,6 +1,7 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
 from genlayer import *
 import json
+import re
 
 ALLOWED_CLASSIFICATIONS = (
     "authentic", "weak", "manipulated", "incomplete",
@@ -106,6 +107,25 @@ class ReliquaryProofVault(gl.Contract):
 
         return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
+    def _extract_readable_text(self, html: str, max_chars: int = 2000) -> str:
+        """
+        Reduce a raw HTML page down to its readable body text.
+
+        Dumping an entire fetched HTML document (scripts, styles, nav
+        boilerplate, inline JSON blobs) as the nondet equivalence-principle
+        result is unreadable in any block explorer and wastes most of the
+        LLM's context on markup instead of the actual page content. This
+        strips non-content elements and tags, collapses whitespace, and
+        truncates to a bounded, human-readable snippet - which is what
+        both the explorer displays and the classification prompt receives.
+        """
+        text = re.sub(r"(?is)<(script|style|noscript|svg|head)[^>]*>.*?</\1>", " ", html)
+        text = re.sub(r"(?s)<!--.*?-->", " ", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        text = text.replace("&nbsp;", " ").replace("&amp;", "&")
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:max_chars]
+
     def _fetch_url(self, url: str) -> str:
         """Fetch a URL using the current GenLayer nondet web API."""
         try:
@@ -113,7 +133,8 @@ class ReliquaryProofVault(gl.Contract):
                 web_data = gl.nondet.web.get(url)
                 if web_data.body is None:
                     return ""
-                return web_data.body.decode("utf-8", errors="replace")
+                html = web_data.body.decode("utf-8", errors="replace")
+                return self._extract_readable_text(html)
             def validator_fn(leader_result) -> bool:
                 return isinstance(leader_result, gl.vm.Return)
             return gl.vm.run_nondet_unsafe(leader_fn, validator_fn) or ""
