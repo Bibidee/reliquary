@@ -127,14 +127,35 @@ class ReliquaryProofVault(gl.Contract):
         return text[:max_chars]
 
     def _fetch_url(self, url: str) -> str:
-        """Fetch a URL using the current GenLayer nondet web API."""
+        """
+        Fetch a URL and reduce it to a compact derived value before it ever
+        becomes the nondet equivalence-principle result.
+
+        The fetch itself (raw or extracted HTML) should never be the value
+        returned from leader_fn - only a small, derived value should be. The
+        team's other GenLayer contracts follow this same principle for URL
+        verification, deriving a sha256 hash of the fetched body rather than
+        exposing the body. Here we need semantic content, not just integrity
+        checking, so the derived value is a short LLM-written summary of the
+        page instead of a hash - but the shape is identical: fetch, reduce,
+        return only the reduction.
+        """
         try:
             def leader_fn():
                 web_data = gl.nondet.web.get(url)
                 if web_data.body is None:
                     return ""
                 html = web_data.body.decode("utf-8", errors="replace")
-                return self._extract_readable_text(html)
+                text = self._extract_readable_text(html, max_chars=6000)
+                if not text:
+                    return ""
+                summary_prompt = (
+                    "Summarize the following webpage content in 2-3 factual sentences. "
+                    "Ignore navigation menus, cookie banners, and unrelated site links. "
+                    "If this looks like a 404 or error page, say so explicitly instead of summarizing.\n\n"
+                    f"PAGE CONTENT:\n{text}"
+                )
+                return gl.nondet.exec_prompt(summary_prompt)
             def validator_fn(leader_result) -> bool:
                 return isinstance(leader_result, gl.vm.Return)
             return gl.vm.run_nondet_unsafe(leader_fn, validator_fn) or ""
