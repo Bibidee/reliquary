@@ -2,7 +2,7 @@ import { createClient, generatePrivateKey, createAccount } from "genlayer-js";
 import { studionet } from "genlayer-js/chains";
 import { TransactionStatus } from "genlayer-js/types";
 
-const CONTRACT_ADDRESS = "0xf68cd2D4aE33effFcc20a8cb31329fD103088859";
+const CONTRACT_ADDRESS = "0xf7683007e45C0BFD16eA1Fb12F9BcF918c7d8826";
 
 const privateKey = generatePrivateKey();
 const account = createAccount(privateKey);

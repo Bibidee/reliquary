@@ -48,7 +48,7 @@ A decentralized evidence vault built on [GenLayer](https://genlayer.com) Studion
 
 ## Contract
 
-**Address:** `0xf68cd2D4aE33effFcc20a8cb31329fD103088859`
+**Address:** `0xf7683007e45C0BFD16eA1Fb12F9BcF918c7d8826`
 **Network:** GenLayer Studionet
 **RPC:** `https://studio.genlayer.com/api`
 
@@ -72,7 +72,7 @@ npm run dev
 Create `.env.local`:
 
 ```
-NEXT_PUBLIC_CONTRACT_ADDRESS=0xf68cd2D4aE33effFcc20a8cb31329fD103088859
+NEXT_PUBLIC_CONTRACT_ADDRESS=0xf7683007e45C0BFD16eA1Fb12F9BcF918c7d8826
 NEXT_PUBLIC_STUDIONET_RPC=https://studio.genlayer.com/api
 ```
 
