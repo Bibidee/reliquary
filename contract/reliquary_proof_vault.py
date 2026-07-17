@@ -24,6 +24,30 @@ ALLOWED_CHALLENGE_TYPES = (
     "privacy_or_safety_concern",
 )
 
+# Classification labels grouped into agreement bands. Each validator now
+# independently fetches and summarizes evidence URLs inside its own nondet
+# round (see _gather_evidence_block), which introduces normal LLM/summary
+# wording variance between the leader and validator runs. Requiring exact
+# string equality on one of nine fine-grained labels is too strict for that
+# variance and causes spurious consensus failures even on unambiguous
+# evidence. Validators only need to agree on the substantive band - e.g.
+# "unverifiable" vs "incomplete" vs "context_required" are all a validator
+# saying "I can't confidently confirm this," which is real agreement even
+# if the exact word differs. A genuine split (e.g. "authentic" vs
+# "manipulated") still lands in different bands and correctly blocks
+# consensus.
+CLASSIFICATION_BANDS = {
+    "authentic": "confirmed",
+    "historically_significant": "confirmed",
+    "verified_significant": "confirmed",
+    "weak": "questionable",
+    "incomplete": "questionable",
+    "context_required": "questionable",
+    "unverifiable": "questionable",
+    "manipulated": "flagged",
+    "disputed": "flagged",
+}
+
 
 class ReliquaryProofVault(gl.Contract):
     packages: TreeMap[u256, str]
@@ -64,49 +88,6 @@ class ReliquaryProofVault(gl.Contract):
             and isinstance(data.get("short_reason"), str)
         )
 
-    def _classify(self, prompt: str) -> dict:
-        """
-        Comparative Equivalence Principle: the validator independently re-runs
-        the same LLM classification prompt and compares its own judgment against
-        the leader's proposed judgment, rather than merely inspecting the
-        leader's output for schema validity.
-
-        Flow (per GenLayer's documented run_nondet_unsafe pattern):
-            leader_fn()    -> gl.nondet.exec_prompt(prompt) -> leader judgment
-            validator_fn() -> gl.nondet.exec_prompt(prompt) -> validator's OWN
-                               independent judgment on the same original evidence
-                               (the leader's result is never injected into the
-                               prompt, so the validator cannot anchor on it)
-                            -> compares validator judgment vs leader judgment
-                            -> returns True (agree) / False (disagree)
-
-        Consensus requires agreement on the primary `classification` label.
-        Secondary fields (confidence, risk scores, etc.) are schema-validated
-        but excluded from the agreement check - independent LLM calls may
-        legitimately assign different confidence levels to the same
-        substantive verdict without indicating real disagreement.
-        """
-        def leader_fn():
-            return gl.nondet.exec_prompt(prompt, response_format="json")
-
-        def validator_fn(leader_result) -> bool:
-            if not isinstance(leader_result, gl.vm.Return):
-                return False
-            leader_data = leader_result.calldata
-            if not self._validate_judgment_schema(leader_data):
-                return False
-
-            # The validator runs its own independent LLM call against the
-            # same original evidence prompt - this is the actual line that
-            # answers "does the validator run its own LLM request?"
-            validator_data = gl.nondet.exec_prompt(prompt, response_format="json")
-            if not self._validate_judgment_schema(validator_data):
-                return False
-
-            return validator_data.get("classification") == leader_data.get("classification")
-
-        return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
-
     def _extract_readable_text(self, html: str, max_chars: int = 2000) -> str:
         """
         Reduce a raw HTML page down to its readable body text.
@@ -126,41 +107,91 @@ class ReliquaryProofVault(gl.Contract):
         text = re.sub(r"\s+", " ", text).strip()
         return text[:max_chars]
 
-    def _fetch_url(self, url: str) -> str:
+    def _gather_evidence_block(self, labeled_urls: list) -> str:
         """
-        Fetch a URL and reduce it to a compact derived value before it ever
-        becomes the nondet equivalence-principle result.
+        Fetch and summarize each (label, url) pair into a readable block.
 
-        The fetch itself (raw or extracted HTML) should never be the value
-        returned from leader_fn - only a small, derived value should be. The
-        team's other GenLayer contracts follow this same principle for URL
-        verification, deriving a sha256 hash of the fetched body rather than
-        exposing the body. Here we need semantic content, not just integrity
-        checking, so the derived value is a short LLM-written summary of the
-        page instead of a hash - but the shape is identical: fetch, reduce,
-        return only the reduction.
+        gl.nondet.web.get and gl.nondet.exec_prompt are themselves
+        non-deterministic operations, so this must only ever be called
+        directly from inside a run_nondet_unsafe leader_fn/validator_fn (one
+        call frame deep, matching the team's other GenLayer contracts, e.g.
+        disputeOS's `_fetch_evidence_block`) - it is not wrapped in its own
+        run_nondet_unsafe here. Fetching, summarizing, and classifying all
+        happen inside one shared nondet round (see _classify below) rather
+        than each producing its own separate equivalence-principle round.
         """
-        try:
-            def leader_fn():
+        lines = []
+        for label, url in labeled_urls:
+            if not url.startswith("http"):
+                continue
+            summary = ""
+            try:
                 web_data = gl.nondet.web.get(url)
-                if web_data.body is None:
-                    return ""
-                html = web_data.body.decode("utf-8", errors="replace")
-                text = self._extract_readable_text(html, max_chars=6000)
-                if not text:
-                    return ""
-                summary_prompt = (
-                    "Summarize the following webpage content in 2-3 factual sentences. "
-                    "Ignore navigation menus, cookie banners, and unrelated site links. "
-                    "If this looks like a 404 or error page, say so explicitly instead of summarizing.\n\n"
-                    f"PAGE CONTENT:\n{text}"
-                )
-                return gl.nondet.exec_prompt(summary_prompt)
-            def validator_fn(leader_result) -> bool:
-                return isinstance(leader_result, gl.vm.Return)
-            return gl.vm.run_nondet_unsafe(leader_fn, validator_fn) or ""
-        except Exception:
-            return ""
+                if web_data.body is not None:
+                    html = web_data.body.decode("utf-8", errors="replace")
+                    text = self._extract_readable_text(html, max_chars=6000)
+                    if text:
+                        summary_prompt = (
+                            "Summarize the following webpage content in 2-3 factual sentences. "
+                            "Ignore navigation menus, cookie banners, and unrelated site links. "
+                            "If this looks like a 404 or error page, say so explicitly instead of summarizing.\n\n"
+                            f"PAGE CONTENT:\n{text}"
+                        )
+                        summary = gl.nondet.exec_prompt(summary_prompt) or ""
+            except Exception:
+                summary = ""
+            if summary:
+                lines.append(f"- {label} ({url}): {summary}")
+            else:
+                lines.append(f"- {label} ({url}): could not be fetched or read")
+        return "\n".join(lines) if lines else "No source content could be fetched."
+
+    def _classify(self, header: str, labeled_urls: list, rules_and_schema: str) -> dict:
+        """
+        Comparative Equivalence Principle, single nondet round.
+
+        The leader fetches every evidence URL, summarizes each one, builds
+        the full classification prompt from those summaries, and gets an
+        LLM judgment - all inside one leader_fn. The validator independently
+        repeats the entire pipeline (its own fetches, its own summaries, its
+        own LLM judgment) on the same original package/challenge data, never
+        seeing the leader's fetched content or judgment. Because every nondet
+        operation (fetch, summarize, classify) is nested inside this single
+        run_nondet_unsafe call, it produces exactly one Equivalence
+        Principle round instead of one round per fetch plus one for the
+        judgment.
+
+        Agreement is checked at the classification-band level (see
+        CLASSIFICATION_BANDS), not exact label equality: since the leader
+        and validator each independently re-fetch and re-summarize evidence,
+        minor wording differences between their generated summaries can
+        legitimately push a borderline LLM judgment to a neighboring label
+        (e.g. "incomplete" vs "unverifiable") without indicating real
+        disagreement about the evidence's substance.
+        """
+        def leader_fn():
+            evidence_block = self._gather_evidence_block(labeled_urls)
+            prompt = f"{header}\n\nFETCHED CONTENT:\n{evidence_block}\n\n{rules_and_schema}"
+            return gl.nondet.exec_prompt(prompt, response_format="json")
+
+        def validator_fn(leader_result) -> bool:
+            if not isinstance(leader_result, gl.vm.Return):
+                return False
+            leader_data = leader_result.calldata
+            if not self._validate_judgment_schema(leader_data):
+                return False
+
+            evidence_block = self._gather_evidence_block(labeled_urls)
+            prompt = f"{header}\n\nFETCHED CONTENT:\n{evidence_block}\n\n{rules_and_schema}"
+            validator_data = gl.nondet.exec_prompt(prompt, response_format="json")
+            if not self._validate_judgment_schema(validator_data):
+                return False
+
+            leader_band = CLASSIFICATION_BANDS.get(leader_data.get("classification"))
+            validator_band = CLASSIFICATION_BANDS.get(validator_data.get("classification"))
+            return leader_band is not None and leader_band == validator_band
+
+        return gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
 
     # -- write methods ---------------------------------------------------------
 
@@ -250,24 +281,9 @@ class ReliquaryProofVault(gl.Contract):
         for a in pkg.get("archive_links", []):
             sources_summary.append(f"Archive link: {a}")
 
-        fetched_content = ""
-        for url in pkg.get("primary_sources", [])[:2]:
-            if url.startswith("http"):
-                content = self._fetch_url(url)
-                if content:
-                    fetched_content += f"\n--- Content from {url} ---\n{content[:2000]}\n"
-                else:
-                    fetched_content += f"\n--- Could not fetch: {url} ---\n"
-
-        for url in pkg.get("archive_links", [])[:1]:
-            if url.startswith("http"):
-                content = self._fetch_url(url)
-                if content:
-                    fetched_content += f"\n--- Archive from {url} ---\n{content[:1500]}\n"
-
         sources_block = "\n".join(sources_summary) if sources_summary else "No sources provided."
 
-        prompt = f"""You are a Reliquary evidence classification validator. Evaluate the submitted evidence package and classify its evidentiary strength and archival significance.
+        header = f"""You are a Reliquary evidence classification validator. Evaluate the submitted evidence package and classify its evidentiary strength and archival significance.
 
 EVIDENCE PACKAGE:
 Title: {pkg["title"]}
@@ -283,12 +299,9 @@ Known Disputes: {pkg["known_disputes"] or "None stated"}
 Why It Matters: {pkg["why_matters"] or "Not provided"}
 
 SOURCES:
-{sources_block}
+{sources_block}"""
 
-FETCHED CONTENT:
-{fetched_content if fetched_content else "No source content could be fetched."}
-
-RULES:
+        rules_and_schema = """RULES:
 - Do not overstate confidence.
 - Do not classify as authentic unless evidence clearly supports the claim.
 - If evidence cannot be accessed, classify as unverifiable or incomplete.
@@ -303,7 +316,10 @@ source_alignment: strong | partial | weak | contradictory | unverifiable
 preservation_priority: standard | elevated | urgent | restricted_review
 short_reason: one concise sentence"""
 
-        result = self._classify(prompt)
+        labeled_urls = [("Primary source", u) for u in pkg.get("primary_sources", [])[:2]]
+        labeled_urls += [("Archive link", u) for u in pkg.get("archive_links", [])[:1]]
+
+        result = self._classify(header, labeled_urls, rules_and_schema)
 
         pkg["current_classification"] = result["classification"]
         pkg["confidence"] = result["confidence"]
@@ -388,14 +404,7 @@ short_reason: one concise sentence"""
         sources_summary = [f"Primary: {s}" for s in pkg.get("primary_sources", [])]
         counter_lines = [f"Counter: {s}" for s in challenge.get("counter_evidence", [])]
 
-        counter_content = ""
-        for url in challenge.get("counter_evidence", [])[:2]:
-            if url.startswith("http"):
-                content = self._fetch_url(url)
-                if content:
-                    counter_content += f"\n--- Counter evidence from {url} ---\n{content[:1500]}\n"
-
-        prompt = f"""You are a Reliquary reclassification validator. A challenge has been filed. Review both the original evidence and the challenge.
+        header = f"""You are a Reliquary reclassification validator. A challenge has been filed. Review both the original evidence and the challenge.
 
 ORIGINAL PACKAGE:
 Title: {pkg["title"]}
@@ -407,12 +416,9 @@ Sources: {chr(10).join(sources_summary) if sources_summary else "None"}
 CHALLENGE:
 Type: {challenge["challenge_type"]}
 Note: {challenge["challenge_note"]}
-Counter Evidence: {chr(10).join(counter_lines) if counter_lines else "None"}
+Counter Evidence: {chr(10).join(counter_lines) if counter_lines else "None"}"""
 
-FETCHED COUNTER EVIDENCE:
-{counter_content if counter_content else "No counter evidence fetched."}
-
-RULES: If the challenge raises credible new information, update accordingly. If weak, keep similar but note dispute. Maintain epistemic honesty.
+        rules_and_schema = """RULES: If the challenge raises credible new information, update accordingly. If weak, keep similar but note dispute. Maintain epistemic honesty.
 
 Return ONLY a valid JSON object on a single line, no prose, no markdown, no code fences. Required keys and allowed values:
 classification: authentic | weak | manipulated | incomplete | historically_significant | verified_significant | context_required | unverifiable | disputed
@@ -423,7 +429,9 @@ source_alignment: strong | partial | weak | contradictory | unverifiable
 preservation_priority: standard | elevated | urgent | restricted_review
 short_reason: one concise sentence"""
 
-        result = self._classify(prompt)
+        labeled_urls = [("Counter evidence", u) for u in challenge.get("counter_evidence", [])[:2]]
+
+        result = self._classify(header, labeled_urls, rules_and_schema)
 
         pkg["current_classification"] = result["classification"]
         pkg["confidence"] = result["confidence"]
