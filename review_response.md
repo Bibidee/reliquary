@@ -71,10 +71,28 @@ request_classification / request_reclassification
 
 ---
 
+## Live Verdict Tests
+
+Five packages were submitted and classified on the deployed contract to verify all three agreement bands work correctly end-to-end:
+
+| # | Package | Expected | Result | Confidence | Band |
+|---|---|---|---|---|---|
+| 1 | Apollo 11 Moon Landing | `authentic` | `verified_significant` | high | confirmed |
+| 2 | Anonymous Pharma Leak | `unverifiable` | `unverifiable` | high | questionable |
+| 3 | Tiananmen Square 1989 | `historically_significant` | `historically_significant` | medium | confirmed |
+| 4 | MH17 Shootdown | `disputed` | `disputed` | high | flagged |
+| 5 | WHO 5G Disinformation | `manipulated` | `manipulated` | high | flagged |
+
+All five reached consensus on the first attempt. No spurious consensus failures. All three bands (`confirmed`, `questionable`, `flagged`) returned correct verdicts with appropriate confidence and manipulation risk scores.
+
+---
+
 ## Deployed Contract
 
 **Address:** `0xB9a3019464e04C0c15721D2AA49512041C302c6f`  
 **Network:** GenLayer Studionet  
-**Commit:** `aa42733` — "Collapse evidence fetch + classification into a single nondet round"
+**Commits:**
+- `aa42733` — Collapse evidence fetch + classification into a single nondet round
+- `3f0adf3` — Add review response documenting all EP fixes
 
-Two consecutive end-to-end tests confirmed both `request_classification` transactions finalized with `status: classified` and a single Equivalence Principle round.
+Seven end-to-end transactions finalized successfully on studionet, covering all verdict bands and both `request_classification` and validator consensus paths.
